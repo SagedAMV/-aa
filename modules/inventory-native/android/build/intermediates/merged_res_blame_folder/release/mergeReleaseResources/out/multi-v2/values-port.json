@@ -1,0 +1,34 @@
+{
+    "logs": [
+        {
+            "outputFile": "com.warehouse.inventorynative.inventory-native-mergeReleaseResources-49:/values-port/values-port.xml",
+            "map": [
+                {
+                    "source": "C:\\Users\\M\\.gradle\\caches\\9.3.1\\transforms\\11ac6b7d63387b2391e3008d9908dd16\\workspace\\transformed\\appcompat-1.7.0\\res\\values-port\\values-port.xml",
+                    "from": {
+                        "startLines": "2",
+                        "startColumns": "4",
+                        "startOffsets": "55",
+                        "endColumns": "55",
+                        "endOffsets": "106"
+                    }
+                }
+            ]
+        },
+        {
+            "outputFile": "com.warehouse.inventorynative.inventory-native-release-51:/values-port/values-port.xml",
+            "map": [
+                {
+                    "source": "C:\\Users\\M\\.gradle\\caches\\9.3.1\\transforms\\11ac6b7d63387b2391e3008d9908dd16\\workspace\\transformed\\appcompat-1.7.0\\res\\values-port\\values-port.xml",
+                    "from": {
+                        "startLines": "2",
+                        "startColumns": "4",
+                        "startOffsets": "55",
+                        "endColumns": "55",
+                        "endOffsets": "106"
+                    }
+                }
+            ]
+        }
+    ]
+}

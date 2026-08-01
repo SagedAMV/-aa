@@ -1,0 +1,14 @@
+# dependencies
+node_modules/
+.npm/
+
+# build outputs
+android/build/
+android/.gradle/
+android/app/build/
+android/local.properties
+
+# misc
+.DS_Store
+*.log
+.eslintcache

@@ -1,0 +1,6 @@
+[
+    {
+        "merged": "com.warehouse.inventorynative.inventory-native-release-51:/layout-v26/abc_screen_toolbar.xml",
+        "source": "com.warehouse.inventorynative.inventory-native-appcompat-1.7.0-3:/layout-v26/abc_screen_toolbar.xml"
+    }
+]

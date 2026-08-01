@@ -1,0 +1,6 @@
+[
+    {
+        "merged": "com.warehouse.inventorynative.inventory-native-release-51:/xml/rn_dev_preferences.xml",
+        "source": "com.warehouse.inventorynative.inventory-native-react-android-0.86.2-release-31:/xml/rn_dev_preferences.xml"
+    }
+]

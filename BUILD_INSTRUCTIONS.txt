@@ -1,0 +1,48 @@
+📦 نظام إدارة مخزن الأدوات - ملفات البناء المهمة
+================================================
+
+المحتويات:
+- app/ : شاشات التطبيق (Expo Router)
+- src/ : منطق العمل (db, services, theme...)
+- plugins/ : إعدادات البناء المحلي (withLocalBuildConfig.js)
+- modules/inventory-native/ : الوحدة الأصلية Kotlin (جسر TypeScript)
+- assets/ : الأيقونات
+- android/ : مشروع أندرويد الأصلي المولد عبر expo prebuild (يحتوي gradlew)
+- app.json, package.json, babel.config.js, metro.config.js, tsconfig.json
+- README.md, PROJECT_STRUCTURE.md, INTERFACES.md
+- check-env.js : فاحص البيئة
+
+خطوات البناء على ويندوز:
+-------------------------
+1. تثبيت JDK 17 (Temurin) وضبط JAVA_HOME
+   setx JAVA_HOME "C:\Program Files\Eclipse Adoptium\jdk-17.0.13.11-hotspot"
+   java -version -> يجب 17
+
+2. تثبيت Android SDK Platform 36 + Build-Tools 36.0.0 + NDK 27.1.12297006
+   setx ANDROID_HOME "C:\Users\اسمك\AppData\Local\Android\Sdk"
+
+3. تثبيت الاعتماديات:
+   npm install
+
+4. (إن حذفت مجلد android) توليد المشروع:
+   npx expo prebuild --platform android --clean
+
+5. إنشاء android/local.properties:
+   sdk.dir=C\:\\Users\\اسمك\\AppData\\Local\\Android\\Sdk
+
+6. فحص البيئة:
+   node check-env.js
+
+7. اختبار المهام:
+   cd android
+   .\gradlew tasks   -> يجب أن يعرض قائمة مهام
+
+8. بناء APK:
+   .\gradlew assembleRelease
+   الناتج: android/app/build/outputs/apk/release/app-release.apk
+
+ملاحظات:
+- المشروع الآن 0 أخطاء TypeScript (tsc --noEmit)
+- expo-font مثبت، لن ينهار vector-icons
+- تم إضافة حماية composite index في Firestore
+- الوحدة Kotlin محمية بـ try/catch لتعمل في Expo Go بدون crash
