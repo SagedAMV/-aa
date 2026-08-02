@@ -11,6 +11,7 @@
  *    ويرجع تلقائياً لمفتاح debug إن لم تُعرَّف — حتى لا يفشل البناء أبداً.
  *
  * 3) ضبط خصائص Gradle اللازمة (الذاكرة، AndroidX، Hermes).
+ * 4) الاحتفاظ بوحدات Expo الأصلية عند تصغير نسخة Release عبر R8/ProGuard.
  */
 
 const {
@@ -18,7 +19,10 @@ const {
   withSettingsGradle,
   withStringsXml,
   withGradleProperties,
+  withDangerousMod,
 } = require('expo/config-plugins');
+const fs = require('fs');
+const path = require('path');
 
 /** اسم المشروع بالإنجليزية لتفادي مشاكل الترميز في Gradle */
 const SAFE_PROJECT_NAME = 'ToolsInventory';
@@ -122,10 +126,50 @@ const withBuildProperties = (config) =>
     return cfg;
   });
 
+
+/**
+ * تحمي وحدات Expo التي تُكتشف وقت التشغيل من R8/ProGuard في APK النهائي.
+ * هذا مهم لوحدات مثل expo-document-picker وexpo-file-system؛ ويجعل القاعدة
+ * باقية حتى بعد تشغيل `expo prebuild --clean` وإعادة إنشاء مجلد android.
+ */
+const EXPO_MODULES_PROGUARD_MARKER = '# Keep Expo native modules used at runtime';
+const EXPO_MODULES_PROGUARD_RULES = `
+${EXPO_MODULES_PROGUARD_MARKER}
+-keep class expo.modules.** { *; }
+-keep @expo.modules.core.interfaces.DoNotStrip class *
+-keepclassmembers class * {
+  @expo.modules.core.interfaces.DoNotStrip *;
+}
+`;
+
+const withExpoModulesProguardRules = (config) =>
+  withDangerousMod(config, [
+    'android',
+    async (cfg) => {
+      const androidRoot =
+        cfg.modRequest.platformProjectRoot ?? path.join(cfg.modRequest.projectRoot, 'android');
+      const proguardPath = path.join(androidRoot, 'app', 'proguard-rules.pro');
+      const current = fs.existsSync(proguardPath)
+        ? fs.readFileSync(proguardPath, 'utf8')
+        : '';
+
+      if (!current.includes(EXPO_MODULES_PROGUARD_MARKER)) {
+        const separator = current && !current.endsWith('\n') ? '\n' : '';
+        fs.writeFileSync(
+          proguardPath,
+          `${current}${separator}${EXPO_MODULES_PROGUARD_RULES}`,
+          'utf8'
+        );
+      }
+      return cfg;
+    },
+  ]);
+
 module.exports = function withLocalBuildConfig(config) {
   config = withSafeProjectName(config);
   config = withArabicAppName(config);
   config = withReleaseSigning(config);
   config = withBuildProperties(config);
+  config = withExpoModulesProguardRules(config);
   return config;
 };

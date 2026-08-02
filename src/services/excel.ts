@@ -8,9 +8,20 @@ import { collection, getDocs, addDoc, serverTimestamp } from 'firebase/firestore
 import { db } from './firebase';
 import type { Tool } from '../types';
 
+// إبقاء المرشّح محصوراً في الصيغ التي يستطيع التطبيق تحليلها. وجود `*/*`
+// ضمن قائمة أنواع متعددة قد يسبب سلوكاً غير متسق في بعض تطبيقات الملفات على أندرويد.
+const EXCEL_MIME_TYPES = [
+  'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+  'application/vnd.ms-excel',
+  'text/csv',
+];
+const EXCEL_EXTENSIONS = new Set(['xlsx', 'xls', 'csv']);
+
+
 /**
- * استيراد/تصدير Excel محلياً بالكامل باستخدام مكتبة xlsx (JS خالص).
- * لا يتم رفع أي ملف إلى الإنترنت.
+ * تتم قراءة ومعاينة ملفات Excel على الجهاز باستخدام مكتبة xlsx.
+ * لا يُرفع الملف نفسه إلى الإنترنت؛ وعند تأكيد المستخدم فقط تُحفظ البيانات
+ * المستوردة عبر طبقة المستودعات الحالية (Firestore).
  */
 
 export interface ImportRow {
@@ -43,29 +54,61 @@ function normalizeHeader(h: string): string {
 }
 
 export async function pickAndParseExcel(): Promise<ImportPreview | null> {
-  const res = await DocumentPicker.getDocumentAsync({
-    type: [
-      'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
-      'application/vnd.ms-excel',
-      'text/csv',
-      '*/*',
-    ],
-    copyToCacheDirectory: true,
-  });
+  let result: Awaited<ReturnType<typeof DocumentPicker.getDocumentAsync>>;
 
-  if (res.canceled || !res.assets?.length) return null;
-  const asset = res.assets[0];
+  try {
+    result = await DocumentPicker.getDocumentAsync({
+      type: EXCEL_MIME_TYPES,
+      // يجعل URI قابلاً للقراءة من expo-file-system بدلاً من content:// المؤقت.
+      copyToCacheDirectory: true,
+      multiple: false,
+    });
+  } catch (error) {
+    const message = error instanceof Error ? error.message : '';
+    throw new Error(
+      `تعذر فتح منتقي الملفات${message ? `: ${message}` : ''}. أعد تشغيل التطبيق ثم حاول مرة أخرى.`
+    );
+  }
+
+  if (result.canceled || !result.assets?.length) return null;
+
+  const asset = result.assets[0];
+  if (!asset?.uri || !asset.name) {
+    throw new Error('لم يُرجع منتقي الملفات ملفاً صالحاً. حاول اختيار الملف مرة أخرى.');
+  }
+
+  const extension = asset.name.split('.').pop()?.toLowerCase();
+  if (!extension || !EXCEL_EXTENSIONS.has(extension)) {
+    throw new Error('اختر ملف Excel بصيغة .xlsx أو .xls أو ملف CSV فقط.');
+  }
 
   const file = new File(asset.uri);
   let b64: string;
   try {
     b64 = await file.base64();
-  } catch {
-    throw new Error('تعذر قراءة الملف');
+  } catch (error) {
+    const message = error instanceof Error ? error.message : '';
+    throw new Error(
+      `تعذر قراءة الملف «${asset.name}»${message ? `: ${message}` : ''}. تأكد من أن الملف متاح على الجهاز.`
+    );
   }
-  const wb = XLSX.read(b64, { type: 'base64' });
-  const sheet = wb.Sheets[wb.SheetNames[0]];
-  if (!sheet) return { valid: [], invalid: [], fileName: asset.name };
+
+  let workbook: XLSX.WorkBook;
+  try {
+    workbook = XLSX.read(b64, { type: 'base64' });
+  } catch {
+    throw new Error('تعذر تحليل الملف. تأكد من أنه ملف Excel أو CSV صالح وغير تالف.');
+  }
+
+  const firstSheetName = workbook.SheetNames?.[0];
+  if (!firstSheetName) {
+    throw new Error('الملف لا يحتوي على أي ورقة بيانات قابلة للاستيراد.');
+  }
+
+  const sheet = workbook.Sheets[firstSheetName];
+  if (!sheet) {
+    throw new Error('تعذر فتح أول ورقة بيانات في الملف.');
+  }
 
   const raw = XLSX.utils.sheet_to_json<Record<string, unknown>>(sheet, {
     defval: '',

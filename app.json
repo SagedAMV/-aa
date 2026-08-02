@@ -63,6 +63,7 @@
           "cameraPermission": "يحتاج التطبيق إلى الكاميرا لمسح باركود الأدوات وتصويرها."
         }
       ],
+      "expo-document-picker",
       [
         "expo-image-picker",
         {

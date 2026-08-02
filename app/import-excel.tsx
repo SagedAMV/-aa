@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useRef, useState } from 'react';
 import { Alert, FlatList, ScrollView, StyleSheet, Text, View } from 'react-native';
 import { router } from 'expo-router';
 import { Ionicons } from '@expo/vector-icons';
@@ -20,21 +20,28 @@ export default function ImportExcelScreen() {
   const { user, canAddTools } = useAuth();
   const [preview, setPreview] = useState<ImportPreview | null>(null);
   const [busy, setBusy] = useState(false);
+  // الحماية بالـ ref فورية؛ فلا يمكن بدء منتقي ملفات ثانٍ قبل أن تنتهي العملية الأولى.
+  const pickingRef = useRef(false);
 
   const onPick = async () => {
+    if (pickingRef.current || busy) return;
+
+    pickingRef.current = true;
     setBusy(true);
     try {
       const res = await pickAndParseExcel();
       if (res) setPreview(res);
     } catch (e) {
-      Alert.alert('تعذّر قراءة الملف', (e as Error).message);
+      const message = e instanceof Error ? e.message : 'تعذر اختيار أو قراءة الملف';
+      Alert.alert('تعذّر قراءة الملف', message);
     } finally {
+      pickingRef.current = false;
       setBusy(false);
     }
   };
 
   const onCommit = async () => {
-    if (!preview || preview.valid.length === 0) return;
+    if (busy || !preview || preview.valid.length === 0) return;
     if (!canAddTools) {
       Alert.alert('غير مصرّح', 'ليس لديك صلاحية إضافة الأدوات');
       return;
@@ -42,7 +49,7 @@ export default function ImportExcelScreen() {
 
     Alert.alert(
       'تأكيد الاستيراد',
-      `سيتم إضافة ${preview.valid.length} أداة إلى قاعدة البيانات المحلية.`,
+      `سيتم إضافة ${preview.valid.length} أداة إلى بيانات المخزن.`,
       [
         { text: 'إلغاء', style: 'cancel' },
         {
@@ -98,6 +105,7 @@ export default function ImportExcelScreen() {
         icon="folder-open-outline"
         onPress={onPick}
         loading={busy && !preview}
+        disabled={busy}
         style={{ marginBottom: spacing.lg }}
       />
 
@@ -174,6 +182,7 @@ export default function ImportExcelScreen() {
                 icon="cloud-upload-outline"
                 onPress={onCommit}
                 loading={busy}
+                disabled={busy}
                 style={{ marginTop: spacing.lg }}
               />
             </>
@@ -182,7 +191,7 @@ export default function ImportExcelScreen() {
       )}
 
       <Text style={s.note}>
-        📴 تتم قراءة الملف ومعالجته على الجهاز فقط — لا يُرفع لأي خادم
+        📴 تتم قراءة الملف ومعاينته على الجهاز أولاً، ثم تُحفظ البيانات فقط بعد تأكيدك
       </Text>
     </ScrollView>
   );

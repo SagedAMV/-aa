@@ -12,3 +12,12 @@
 -keep class com.facebook.react.turbomodule.** { *; }
 
 # Add any project specific keep options here:
+
+# Keep Expo native modules used at runtime
+# R8/ProGuard must not strip or rename DocumentPicker, FileSystem, and other
+# Expo Modules APIs that the application discovers dynamically.
+-keep class expo.modules.** { *; }
+-keep @expo.modules.core.interfaces.DoNotStrip class *
+-keepclassmembers class * {
+  @expo.modules.core.interfaces.DoNotStrip *;
+}
