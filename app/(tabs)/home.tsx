@@ -1,4 +1,4 @@
-import React, { useCallback, useState } from 'react';
+import React, { useCallback, useEffect, useState } from 'react';
 import {
   Pressable,
   RefreshControl,
@@ -9,7 +9,7 @@ import {
 } from 'react-native';
 import { router, useFocusEffect } from 'expo-router';
 import { Ionicons } from '@expo/vector-icons';
-import { getDashboardStats } from '../../src/db/movementsRepo';
+import { getDashboardStats, subscribeDisbursements, subscribeAdditions } from '../../src/db/movementsRepo';
 import { checkOverdueAndNotify } from '../../src/services/notifications';
 import { useAuth } from '../../src/context/AuthContext';
 import { Card, Loader } from '../../src/components/UI';
@@ -20,11 +20,30 @@ export default function HomeScreen() {
   const { user, isAdmin } = useAuth();
   const [stats, setStats] = useState<DashboardStats | null>(null);
   const [refreshing, setRefreshing] = useState(false);
+  const [pendingCount, setPendingCount] = useState(0);
 
   const load = useCallback(async () => {
     const s = await getDashboardStats();
     setStats(s);
   }, []);
+
+  // عداد الطلبات المعلقة للمستخدم العادي
+  useEffect(() => {
+    if (isAdmin) return;
+    const unsub1 = subscribeDisbursements((data) => {
+      const count = data.filter(w => w.withdrawn_by === user?.username && w.status === 'pending').length;
+      setPendingCount(prev => {
+        // Count additions too
+        return prev; // Will be updated by additions subscription
+      });
+    });
+    const unsub2 = subscribeAdditions((data) => {
+      const wdCount = 0; // simplified
+      const addCount = data.filter(a => a.added_by === user?.username && a.status === 'pending').length;
+      setPendingCount(prev => prev + addCount);
+    });
+    return () => { unsub1(); unsub2(); };
+  }, [isAdmin, user]);
 
   useFocusEffect(
     useCallback(() => {
@@ -131,6 +150,13 @@ export default function HomeScreen() {
             label="استيراد Excel"
             onPress={() => router.push('/import-excel')}
           />
+          {!isAdmin && pendingCount > 0 && (
+            <Action
+              icon="hourglass-outline"
+              label={`معلقة (${pendingCount})`}
+              onPress={() => router.push('/my-pending')}
+            />
+          )}
         </View>
       </Card>
 

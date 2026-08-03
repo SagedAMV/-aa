@@ -10,13 +10,20 @@ import {
 } from 'react-native';
 import { router, useFocusEffect, useLocalSearchParams } from 'expo-router';
 import { Ionicons } from '@expo/vector-icons';
-import { deleteTool, getTool } from '../../src/db/toolsRepo';
+import { deleteTool, getTool, duplicateTool } from '../../src/db/toolsRepo';
 import { listDisbursements } from '../../src/db/movementsRepo';
 import { statusAr } from '../../src/services/excel';
 import { useAuth } from '../../src/context/AuthContext';
 import { Badge, Button, Card, InfoRow, Loader } from '../../src/components/UI';
 import { colors, font, radius, spacing } from '../../src/theme';
-import type { Tool, Disbursement } from '../../src/types';
+import type { Tool, Disbursement, ToolCondition } from '../../src/types';
+
+const CONDITION_MAP: Record<ToolCondition, { label: string; tone: 'info' | 'success' | 'danger' | 'warning' | 'muted' }> = {
+  new: { label: 'جديد', tone: 'success' },
+  used: { label: 'مستعمل', tone: 'info' },
+  needs_maintenance: { label: 'يحتاج صيانة', tone: 'warning' },
+  damaged: { label: 'تالف', tone: 'danger' },
+};
 
 export default function ToolDetailScreen() {
   const { id } = useLocalSearchParams<{ id: string }>();
@@ -66,10 +73,31 @@ export default function ToolDetailScreen() {
     ]);
   };
 
+  const onDuplicate = () => {
+    Alert.alert('نسخ الأداة', `هل تريد إنشاء نسخة من "${tool?.name}"؟`, [
+      { text: 'إلغاء', style: 'cancel' },
+      {
+        text: 'نسخ',
+        onPress: async () => {
+          try {
+            const newId = await duplicateTool(String(tool?.id), user?.username ?? 'system');
+            Alert.alert('تم', 'تم إنشاء نسخة من الأداة', [
+              { text: 'عرض النسخة', onPress: () => router.replace(`/tool/${newId}`) },
+              { text: 'لاحقاً' },
+            ]);
+          } catch (e: any) {
+            Alert.alert('خطأ', e.message ?? 'فشل النسخ');
+          }
+        },
+      },
+    ]);
+  };
+
   if (!tool) return <Loader text="جارٍ تحميل بيانات الأداة..." />;
 
   const out = tool.total_quantity - tool.available_qty;
   const isLow = tool.min_quantity > 0 && tool.available_qty <= tool.min_quantity;
+  const conditionInfo = CONDITION_MAP[tool.condition ?? 'used'];
 
   return (
     <ScrollView
@@ -92,6 +120,7 @@ export default function ToolDetailScreen() {
               {tool.category_name && (
                 <Badge text={tool.category_name} tone="info" />
               )}
+              <Badge text={conditionInfo.label} tone={conditionInfo.tone} />
               {isLow && <Badge text="كمية منخفضة" tone="danger" />}
               {tool.available_qty === 0 && <Badge text="غير متاح" tone="warning" />}
             </View>
@@ -143,6 +172,11 @@ export default function ToolDetailScreen() {
           label="حد التنبيه"
           value={String(tool.min_quantity)}
           icon="trending-down-outline"
+        />
+        <InfoRow
+          label="حالة الأداة"
+          value={conditionInfo.label}
+          icon="information-circle-outline"
         />
         <InfoRow
           label="آخر تحديث"
@@ -199,6 +233,12 @@ export default function ToolDetailScreen() {
       {/* إدارة */}
       {canAddTools && (
         <View style={{ gap: spacing.md, marginTop: spacing.lg }}>
+          <Button
+            title="نسخ الأداة"
+            icon="copy-outline"
+            variant="outline"
+            onPress={onDuplicate}
+          />
           <Button
             title="تعديل بيانات الأداة"
             icon="create-outline"

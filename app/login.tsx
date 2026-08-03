@@ -79,15 +79,6 @@ export default function LoginScreen() {
               onPress={onSubmit}
               loading={loading}
             />
-
-            <View style={s.note}>
-              <Text style={s.noteText}>
-                الحساب الافتراضي عند أول تشغيل:{'\n'}
-                المستخدم: <Text style={s.bold}>admin</Text> — كلمة المرور:{' '}
-                <Text style={s.bold}>admin123</Text>
-                {'\n'}يُنصح بتغييرها فوراً من الإعدادات.
-              </Text>
-            </View>
           </View>
         </ScrollView>
       </KeyboardAvoidingView>
@@ -118,17 +109,4 @@ const s = StyleSheet.create({
     borderRadius: radius.lg,
     padding: spacing.xl,
   },
-  note: {
-    marginTop: spacing.lg,
-    backgroundColor: colors.primaryLight,
-    padding: spacing.md,
-    borderRadius: radius.md,
-  },
-  noteText: {
-    fontSize: font.tiny,
-    color: colors.primaryDark,
-    textAlign: 'center',
-    lineHeight: 18,
-  },
-  bold: { fontWeight: '800' },
 });

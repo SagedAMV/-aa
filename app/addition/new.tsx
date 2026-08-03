@@ -22,7 +22,7 @@ const SOURCES = ['شراء', 'تبرع', 'إرجاع', 'تحويل', 'أخرى']
 
 export default function NewAdditionScreen() {
   const { toolId } = useLocalSearchParams<{ toolId?: string }>();
-  const { user, canAddTools } = useAuth();
+  const { user, additionLevel, canAddTools } = useAuth();
 
   const [tool, setTool] = useState<Tool | null>(null);
   const [picker, setPicker] = useState(false);
@@ -33,6 +33,10 @@ export default function NewAdditionScreen() {
   const [source, setSource] = useState('شراء');
   const [notes, setNotes] = useState('');
   const [saving, setSaving] = useState(false);
+
+  // التحقق من الصلاحيات
+  const canAdd = additionLevel !== 'none';
+  const needsApproval = additionLevel === 'with_approval';
 
   useEffect(() => {
     if (toolId) {
@@ -49,8 +53,8 @@ export default function NewAdditionScreen() {
   }, [picker, loadTools]);
 
   const onSubmit = async () => {
-    if (!canAddTools) {
-      Alert.alert('غير مصرّح', 'ليس لديك صلاحية تسجيل الإضافات');
+    if (!canAdd) {
+      Alert.alert('تنبيه', 'ليس لديك صلاحية تسجيل الإضافات');
       return;
     }
     if (!tool) {
@@ -71,16 +75,31 @@ export default function NewAdditionScreen() {
         addedBy: user?.username ?? 'system',
         source,
         notes: notes || null,
+        autoApprove: additionLevel === 'direct',
       });
-      Alert.alert('تم', `تمت إضافة ${q} وحدة إلى "${tool.name}"`, [
-        { text: 'حسناً', onPress: () => router.back() },
-      ]);
+
+      const message = additionLevel === 'direct'
+        ? `تمت إضافة ${q} وحدة إلى "${tool.name}"`
+        : `تم إرسال طلب إضافة ${q} وحدة وينتظر موافقة المدير`;
+
+      Alert.alert('تم', message, [{ text: 'حسناً', onPress: () => router.back() }]);
     } catch (e: any) {
       Alert.alert('خطأ', e.message ?? 'فشل الإضافة');
     } finally {
       setSaving(false);
     }
   };
+
+  // إذا لم يكن لديه صلاحية
+  if (!canAdd) {
+    return (
+      <View style={s.noPermission}>
+        <Ionicons name="lock-closed" size={64} color={colors.textLight} />
+        <Text style={s.noPermissionText}>ليس لديك صلاحية إضافة كميات</Text>
+        <Text style={s.noPermissionSub}>تواصل مع المدير للحصول على الصلاحية</Text>
+      </View>
+    );
+  }
 
   return (
     <ScrollView
@@ -153,8 +172,18 @@ export default function NewAdditionScreen() {
         </View>
       )}
 
+      {/* تحذير إذا كان يحتاج موافقة */}
+      {needsApproval && (
+        <View style={s.warn}>
+          <Ionicons name="information-circle" size={18} color={colors.warning} />
+          <Text style={s.warnText}>
+            ليس لديك صلاحية الإضافة المباشرة — سيُسجَّل الطلب بانتظار موافقة المدير.
+          </Text>
+        </View>
+      )}
+
       <Button
-        title="تسجيل الإضافة"
+        title={additionLevel === 'direct' ? 'تسجيل الإضافة' : 'إرسال طلب الإضافة'}
         icon="add-circle-outline"
         variant="success"
         onPress={onSubmit}
@@ -196,74 +225,53 @@ export default function NewAdditionScreen() {
 }
 
 const s = StyleSheet.create({
-  label: {
-    fontSize: font.small,
-    fontWeight: '700',
-    color: colors.text,
-    marginBottom: 6,
-    textAlign: 'right',
+  noPermission: {
+    flex: 1, justifyContent: 'center', alignItems: 'center',
+    padding: spacing.xxl, gap: spacing.md,
   },
+  noPermissionText: { fontSize: font.h2, fontWeight: '700', color: colors.text, textAlign: 'center' },
+  noPermissionSub: { fontSize: font.small, color: colors.textMuted, textAlign: 'center' },
+  label: { fontSize: font.small, fontWeight: '700', color: colors.text, marginBottom: 6, textAlign: 'right' },
   selector: {
-    flexDirection: 'row-reverse',
-    alignItems: 'center',
-    gap: 8,
-    backgroundColor: colors.card,
-    borderWidth: 1,
-    borderColor: colors.border,
-    borderRadius: radius.md,
-    padding: spacing.md,
+    flexDirection: 'row-reverse', alignItems: 'center', gap: 8,
+    backgroundColor: colors.card, borderWidth: 1, borderColor: colors.border,
+    borderRadius: radius.md, padding: spacing.md,
   },
   selTitle: { fontSize: font.body, fontWeight: '700', color: colors.text, textAlign: 'right' },
   selMeta: { fontSize: font.tiny, color: colors.textMuted, marginTop: 2, textAlign: 'right' },
   selPlaceholder: { flex: 1, fontSize: font.small, color: colors.textLight, textAlign: 'right' },
-
   newTool: {
-    flexDirection: 'row-reverse',
-    alignItems: 'center',
-    gap: 6,
-    paddingVertical: spacing.md,
-    marginBottom: spacing.sm,
+    flexDirection: 'row-reverse', alignItems: 'center', gap: 6,
+    paddingVertical: spacing.md, marginBottom: spacing.sm,
   },
   newToolText: { fontSize: font.tiny, color: colors.primary, fontWeight: '600' },
-
   chips: { flexDirection: 'row-reverse', flexWrap: 'wrap', gap: 8, marginBottom: spacing.lg },
   chip: {
-    paddingHorizontal: 14,
-    paddingVertical: 8,
-    borderRadius: radius.pill,
-    borderWidth: 1,
-    borderColor: colors.border,
-    backgroundColor: colors.card,
+    paddingHorizontal: 14, paddingVertical: 8, borderRadius: radius.pill,
+    borderWidth: 1, borderColor: colors.border, backgroundColor: colors.card,
   },
   chipActive: { backgroundColor: colors.success, borderColor: colors.success },
   chipText: { fontSize: font.tiny, fontWeight: '700', color: colors.textMuted },
-
   preview: {
-    backgroundColor: colors.successLight,
-    padding: spacing.md,
-    borderRadius: radius.md,
-    marginBottom: spacing.lg,
+    backgroundColor: colors.successLight, padding: spacing.md,
+    borderRadius: radius.md, marginBottom: spacing.lg,
   },
   previewText: { fontSize: font.small, color: colors.success, textAlign: 'center' },
   previewBold: { fontWeight: '800' },
-
+  warn: {
+    flexDirection: 'row-reverse', gap: 8, backgroundColor: colors.warningLight,
+    padding: spacing.md, borderRadius: radius.md, marginBottom: spacing.lg, alignItems: 'center',
+  },
+  warnText: { flex: 1, fontSize: font.tiny, color: colors.warning, textAlign: 'right' },
   searchInput: {
-    backgroundColor: colors.card,
-    borderWidth: 1,
-    borderColor: colors.border,
-    borderRadius: radius.md,
-    padding: spacing.md,
-    marginBottom: spacing.md,
-    textAlign: 'right',
-    color: colors.text,
+    backgroundColor: colors.card, borderWidth: 1, borderColor: colors.border,
+    borderRadius: radius.md, padding: spacing.md, marginBottom: spacing.md,
+    textAlign: 'right', color: colors.text,
   },
   pickRow: {
-    flexDirection: 'row-reverse',
-    alignItems: 'center',
-    backgroundColor: colors.card,
-    padding: spacing.md,
-    borderRadius: radius.md,
-    marginBottom: 8,
+    flexDirection: 'row-reverse', alignItems: 'center',
+    backgroundColor: colors.card, padding: spacing.md,
+    borderRadius: radius.md, marginBottom: 8,
   },
   pickName: { fontSize: font.small, fontWeight: '700', color: colors.text, textAlign: 'right' },
   pickMeta: { fontSize: font.tiny, color: colors.textMuted, marginTop: 2, textAlign: 'right' },

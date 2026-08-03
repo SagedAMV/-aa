@@ -52,11 +52,15 @@ function RootNavigator() {
       <Stack.Screen name="tool/new" options={{ title: 'إضافة أداة جديدة' }} />
       <Stack.Screen name="scan" options={{ title: 'مسح الباركود' }} />
       <Stack.Screen name="withdraw/new" options={{ title: 'تسجيل سحب' }} />
+      <Stack.Screen name="return" options={{ title: 'تسجيل إرجاع' }} />
       <Stack.Screen name="addition/new" options={{ title: 'تسجيل إضافة' }} />
       <Stack.Screen name="import-excel" options={{ title: 'استيراد من Excel' }} />
       <Stack.Screen name="users" options={{ title: 'إدارة المستخدمين' }} />
       <Stack.Screen name="categories" options={{ title: 'إدارة التصنيفات' }} />
       <Stack.Screen name="audit" options={{ title: 'سجل الإجراءات' }} />
+      <Stack.Screen name="my-pending" options={{ title: 'طلباتي المعلقة' }} />
+      <Stack.Screen name="duplicates" options={{ title: 'الأدوات المتكررة' }} />
+      <Stack.Screen name="approvals" options={{ title: 'طلبات الموافقة' }} />
     </Stack>
   );
 }

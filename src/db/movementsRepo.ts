@@ -4,6 +4,7 @@ import {
   doc,
   addDoc,
   updateDoc,
+  deleteDoc,
   getDoc,
   getDocs,
   query,
@@ -14,7 +15,7 @@ import {
   onSnapshot,
   Unsubscribe,
 } from 'firebase/firestore';
-import type { Addition, DashboardStats, Disbursement, Tool } from '../types';
+import type { Addition, DashboardStats, Disbursement, Tool, WithdrawType, ReturnedCondition } from '../types';
 
 const withdrawalsCollection = collection(db, 'withdrawals');
 const additionsCollection = collection(db, 'additions');
@@ -26,17 +27,12 @@ function toIdStr(id: string | number): string {
 
 // ---------- Helpers ----------
 async function enrichDisbursements(list: any[]): Promise<Disbursement[]> {
-  // Try to enrich tool_name client side
   try {
     const toolIds = Array.from(new Set(list.map(w => w.tool_id).filter(Boolean)));
     const toolMap = new Map<string, string>();
-    // Firestore 'in' query max 10, so batch
     for (let i = 0; i < toolIds.length; i += 10) {
       const batch = toolIds.slice(i, i + 10);
       if (batch.length === 0) continue;
-      const q = query(toolsCollection, where('__name__', 'in', batch as any));
-      // __name__ doesn't work with string IDs in web? fallback to individual gets
-      // We'll try individual gets for reliability
       const promises = batch.map(async (tid) => {
         try {
           const d = await getDoc(doc(db, 'tools', tid));
@@ -74,9 +70,13 @@ export function subscribeDisbursements(
         withdrawn_at: raw.withdrawn_at?.toDate?.()?.toISOString?.() ?? raw.withdrawn_at ?? new Date().toISOString(),
         approved_by: raw.approved_by ?? null,
         notes: raw.notes ?? null,
+        returned_qty: raw.returned_qty ?? 0,
+        expected_return: raw.expected_return ?? null,
+        returned_at: raw.returned_at ?? null,
+        withdraw_type: raw.withdraw_type ?? 'permanent',
+        return_condition: raw.return_condition ?? null,
       } as Disbursement;
     });
-    // Enrich
     data = await enrichDisbursements(data);
     callback(data);
   }, (err) => {
@@ -101,6 +101,8 @@ export function subscribeAdditions(
         source: raw.source ?? null,
         added_at: raw.added_at?.toDate?.()?.toISOString?.() ?? raw.added_at ?? new Date().toISOString(),
         notes: raw.notes ?? null,
+        status: raw.status ?? 'approved',
+        approved_by: raw.approved_by ?? null,
       } as Addition;
     });
     callback(data);
@@ -119,6 +121,8 @@ export interface DisburseInput {
   reason?: string | null;
   notes?: string | null;
   autoApprove: boolean;
+  withdrawType?: WithdrawType;
+  expectedReturn?: string | null;
 }
 
 export async function createDisbursement(
@@ -130,6 +134,12 @@ export async function createDisbursement(
 
   const toolIdStr = toIdStr(input.toolId);
   const status: 'pending' | 'approved' = input.autoApprove ? 'approved' : 'pending';
+  const withdrawType = input.withdrawType ?? 'permanent';
+
+  // إذا كان صرف مؤقت، يجب تحديد موعد الإرجاع
+  if (withdrawType === 'temporary' && !input.expectedReturn) {
+    throw new Error('يجب تحديد موعد الإرجاع للصرف المؤقت');
+  }
 
   const newDocRef = await runTransaction(db, async (transaction) => {
     const toolRef = doc(db, 'tools', toolIdStr);
@@ -154,8 +164,11 @@ export async function createDisbursement(
       notes: input.notes || null,
       approved_by: status === 'approved' ? input.withdrawnBy : null,
       withdrawn_at: serverTimestamp(),
-      expected_return: null,
+      expected_return: withdrawType === 'temporary' ? input.expectedReturn : null,
       returned_qty: 0,
+      withdraw_type: withdrawType,
+      return_condition: null,
+      returned_at: null,
     });
 
     if (status === 'approved') {
@@ -164,14 +177,21 @@ export async function createDisbursement(
         updated_at: serverTimestamp(),
       });
     }
+    
     // Audit
     const auditRef = doc(collection(db, 'audit_logs'));
     transaction.set(auditRef, {
       actor: input.withdrawnBy,
-      action: status === 'approved' ? 'withdraw' : 'withdraw_request',
+      action: status === 'approved' ? 'withdraw_direct' : 'withdraw_request',
       entity: 'withdrawal',
       entity_id: wdRef.id,
-      details: `${toolData.name} x${qty} -> ${input.recipient}`,
+      details: JSON.stringify({
+        tool_name: toolData.name,
+        quantity: qty,
+        recipient: input.recipient,
+        withdraw_type: withdrawType,
+        expected_return: input.expectedReturn,
+      }),
       created_at: serverTimestamp(),
     });
 
@@ -211,7 +231,11 @@ export async function approveDisbursement(id: string, approver: string): Promise
       action: 'approve',
       entity: 'withdrawal',
       entity_id: sid,
-      details: `approved ${wdData.tool_name ?? wdData.tool_id}`,
+      details: JSON.stringify({
+        tool_name: wdData.tool_name,
+        quantity: wdData.quantity,
+        original_request_by: wdData.withdrawn_by,
+      }),
       created_at: serverTimestamp(),
     });
   });
@@ -220,6 +244,10 @@ export async function approveDisbursement(id: string, approver: string): Promise
 export async function rejectDisbursement(id: string, approver: string): Promise<void> {
   const sid = toIdStr(id);
   const wdRef = doc(db, 'withdrawals', sid);
+  const wdDoc = await getDoc(wdRef);
+  if (!wdDoc.exists()) throw new Error('طلب الصرف غير موجود');
+  const wdData = wdDoc.data() as any;
+  
   await updateDoc(wdRef, { status: 'rejected', approved_by: approver });
 
   try {
@@ -228,16 +256,166 @@ export async function rejectDisbursement(id: string, approver: string): Promise<
       action: 'reject',
       entity: 'withdrawal',
       entity_id: sid,
+      details: JSON.stringify({
+        tool_name: wdData.tool_name,
+        quantity: wdData.quantity,
+        original_request_by: wdData.withdrawn_by,
+      }),
       created_at: serverTimestamp(),
     });
   } catch {}
+}
+
+// ---------- إرجاع أداة ----------
+export interface ReturnInput {
+  disbursementId: string;
+  returnedQty: number;
+  returnedBy: string;
+  condition?: ReturnedCondition;
+  notes?: string;
+}
+
+export async function returnDisbursement(input: ReturnInput): Promise<void> {
+  const sid = toIdStr(input.disbursementId);
+  const returnQty = Math.floor(Number(input.returnedQty));
+  
+  if (!Number.isFinite(returnQty) || returnQty <= 0) {
+    throw new Error('الكمية المُرجعة يجب أن تكون أكبر من صفر');
+  }
+
+  await runTransaction(db, async (transaction) => {
+    const wdRef = doc(db, 'withdrawals', sid);
+    const wdDoc = await transaction.get(wdRef);
+    if (!wdDoc.exists()) throw new Error('عملية الصرف غير موجودة');
+    const wdData = wdDoc.data() as any;
+    
+    if (wdData.status !== 'approved') {
+      throw new Error('يمكن إرجاع عملية مصروفة فقط');
+    }
+
+    const originalQty = wdData.quantity;
+    const alreadyReturned = wdData.returned_qty ?? 0;
+    
+    if (alreadyReturned + returnQty > originalQty) {
+      throw new Error(`الكمية المُرجعة تتجاوز المسموح. المتبقي للإرجاع: ${originalQty - alreadyReturned}`);
+    }
+
+    const newReturnedQty = alreadyReturned + returnQty;
+    const isFullyReturned = newReturnedQty >= originalQty;
+    
+    const toolRef = doc(db, 'tools', wdData.tool_id);
+    const toolDoc = await transaction.get(toolRef);
+    if (!toolDoc.exists()) throw new Error('الأداة غير موجودة');
+    const toolData = toolDoc.data() as any;
+
+    // تحديث عملية الصرف
+    transaction.update(wdRef, {
+      returned_qty: newReturnedQty,
+      return_condition: input.condition ?? wdData.return_condition ?? null,
+      returned_at: isFullyReturned ? serverTimestamp() : wdData.returned_at,
+      status: isFullyReturned ? 'returned' : 'partial',
+    });
+
+    // إعادة الكمية للمخزن
+    transaction.update(toolRef, {
+      available_qty: (toolData.available_qty ?? 0) + returnQty,
+      updated_at: serverTimestamp(),
+    });
+
+    // Audit
+    const auditRef = doc(collection(db, 'audit_logs'));
+    transaction.set(auditRef, {
+      actor: input.returnedBy,
+      action: 'return',
+      entity: 'withdrawal',
+      entity_id: sid,
+      details: JSON.stringify({
+        tool_name: wdData.tool_name,
+        returned_qty: returnQty,
+        total_returned: newReturnedQty,
+        original_qty: originalQty,
+        is_fully_returned: isFullyReturned,
+        condition: input.condition,
+      }),
+      created_at: serverTimestamp(),
+    });
+  });
+}
+
+// ---------- حذف عملية صرف ----------
+export async function deleteDisbursement(id: string, deletedBy: string): Promise<void> {
+  const sid = toIdStr(id);
+  
+  await runTransaction(db, async (transaction) => {
+    const wdRef = doc(db, 'withdrawals', sid);
+    const wdDoc = await transaction.get(wdRef);
+    if (!wdDoc.exists()) throw new Error('عملية الصرف غير موجودة');
+    const wdData = wdDoc.data() as any;
+
+    // حساب الكمية المتبقية التي لم تُرجع
+    const remainingQty = wdData.quantity - (wdData.returned_qty ?? 0);
+    
+    // إعادة الكمية للمخزن فقط إذا كانت العملية مصروفة (approved أو partial)
+    // العمليات المعلقة (pending) أو المرفوضة (rejected) لم تُخصم من المخزن أساساً
+    // العمليات المرتجعة (returned) أُرِجعت بالكامل
+    if ((wdData.status === 'approved' || wdData.status === 'partial') && remainingQty > 0) {
+      const toolRef = doc(db, 'tools', wdData.tool_id);
+      const toolDoc = await transaction.get(toolRef);
+      if (toolDoc.exists()) {
+        const toolData = toolDoc.data() as any;
+        transaction.update(toolRef, {
+          available_qty: (toolData.available_qty ?? 0) + remainingQty,
+          updated_at: serverTimestamp(),
+        });
+      }
+    }
+
+    // حذف عملية الصرف
+    transaction.delete(wdRef);
+
+    // Audit
+    const auditRef = doc(collection(db, 'audit_logs'));
+    transaction.set(auditRef, {
+      actor: deletedBy,
+      action: 'delete',
+      entity: 'withdrawal',
+      entity_id: sid,
+      details: JSON.stringify({
+        tool_name: wdData.tool_name,
+        quantity: wdData.quantity,
+        status: wdData.status,
+        returned_qty: wdData.returned_qty ?? 0,
+        qty_restored: (wdData.status === 'approved' || wdData.status === 'partial') ? remainingQty : 0,
+      }),
+      created_at: serverTimestamp(),
+    });
+  });
+}
+
+// ---------- حذف عمليات صرف متعددة ----------
+export async function deleteMultipleDisbursements(
+  ids: string[],
+  deletedBy: string
+): Promise<{ deleted: number; errors: string[] }> {
+  let deleted = 0;
+  const errors: string[] = [];
+
+  for (const id of ids) {
+    try {
+      await deleteDisbursement(id, deletedBy);
+      deleted++;
+    } catch (e: any) {
+      errors.push(`عملية ${id}: ${e.message}`);
+    }
+  }
+
+  return { deleted, errors };
 }
 
 export async function listDisbursements(filter?: { toolId?: string | number }): Promise<Disbursement[]> {
   try {
     let snap;
     if (filter?.toolId) {
-      // Avoid composite index requiring where+orderBy, fetch by where only then sort client side
       try {
         const q = query(withdrawalsCollection, where('tool_id', '==', toIdStr(filter.toolId)));
         snap = await getDocs(q);
@@ -265,9 +443,13 @@ export async function listDisbursements(filter?: { toolId?: string | number }): 
         withdrawn_at: raw.withdrawn_at?.toDate?.()?.toISOString?.() ?? raw.withdrawn_at ?? new Date().toISOString(),
         approved_by: raw.approved_by ?? null,
         notes: raw.notes ?? null,
+        returned_qty: raw.returned_qty ?? 0,
+        expected_return: raw.expected_return ?? null,
+        returned_at: raw.returned_at ?? null,
+        withdraw_type: raw.withdraw_type ?? 'permanent',
+        return_condition: raw.return_condition ?? null,
       } as Disbursement;
     });
-    // Sort client side desc
     list.sort((a: any, b: any) => new Date(b.withdrawn_at).getTime() - new Date(a.withdrawn_at).getTime());
     list = await enrichDisbursements(list);
     return list;
@@ -311,8 +493,8 @@ export async function getDashboardStats(): Promise<DashboardStats> {
       const status = data.status;
       if (status === 'approved') activeDisbursements += 1;
       if (status === 'pending') pendingApprovals += 1;
-      // Overdue check if expected_return exists
-      if (data.expected_return && status === 'approved') {
+      // Overdue check for temporary disbursements
+      if (data.withdraw_type === 'temporary' && data.expected_return && status === 'approved') {
         try {
           const exp = new Date(data.expected_return);
           if (exp < now) overdueCount += 1;
@@ -320,11 +502,10 @@ export async function getDashboardStats(): Promise<DashboardStats> {
       }
     });
 
-    // Additions this month
     let additionsThisMonth = 0;
     const firstOfMonth = new Date();
     firstOfMonth.setDate(1);
-    firstOfMonth.setHours(0,0,0,0);
+    firstOfMonth.setHours(0, 0, 0, 0);
     addSnap.docs.forEach(d => {
       const data = d.data() as any;
       const at = data.added_at?.toDate?.() ?? (data.added_at ? new Date(data.added_at) : null);
@@ -344,14 +525,9 @@ export async function getDashboardStats(): Promise<DashboardStats> {
   } catch (e) {
     console.error('getDashboardStats failed', e);
     return {
-      totalTools: 0,
-      totalUnits: 0,
-      availableUnits: 0,
-      activeDisbursements: 0,
-      pendingApprovals: 0,
-      overdueCount: 0,
-      lowStockCount: 0,
-      additionsThisMonth: 0,
+      totalTools: 0, totalUnits: 0, availableUnits: 0,
+      activeDisbursements: 0, pendingApprovals: 0,
+      overdueCount: 0, lowStockCount: 0, additionsThisMonth: 0,
     };
   }
 }
@@ -371,7 +547,7 @@ export async function topWithdrawnTools(limit: number = 5): Promise<{ name: stri
       entry.units += qty;
       if (name && name !== entry.name) entry.name = name;
     });
-    return Array.from(map.values()).sort((a,b) => b.times - a.times).slice(0, limit);
+    return Array.from(map.values()).sort((a, b) => b.times - a.times).slice(0, limit);
   } catch {
     return [];
   }
@@ -384,12 +560,15 @@ export interface AdditionInput {
   addedBy: string;
   source?: string | null;
   notes?: string | null;
+  autoApprove?: boolean;
 }
 
 export async function createAddition(input: AdditionInput): Promise<string> {
   const qty = Math.floor(Number(input.quantity));
   if (!Number.isFinite(qty) || qty <= 0) throw new Error('الكمية يجب أن تكون أكبر من صفر');
   const toolIdStr = toIdStr(input.toolId);
+  const autoApprove = input.autoApprove !== false; // default true
+  const status = autoApprove ? 'approved' : 'pending';
 
   const newDocRef = await runTransaction(db, async (transaction) => {
     const toolRef = doc(db, 'tools', toolIdStr);
@@ -407,21 +586,30 @@ export async function createAddition(input: AdditionInput): Promise<string> {
       source: input.source || null,
       notes: input.notes || null,
       added_at: serverTimestamp(),
+      status,
+      approved_by: autoApprove ? input.addedBy : null,
     });
 
-    transaction.update(toolRef, {
-      total_quantity: (toolData.total_quantity ?? 0) + qty,
-      available_qty: (toolData.available_qty ?? 0) + qty,
-      updated_at: serverTimestamp(),
-    });
+    // إذا تمت الموافقة مباشرة، أضف الكمية فوراً
+    if (autoApprove) {
+      transaction.update(toolRef, {
+        total_quantity: (toolData.total_quantity ?? 0) + qty,
+        available_qty: (toolData.available_qty ?? 0) + qty,
+        updated_at: serverTimestamp(),
+      });
+    }
 
     const auditRef = doc(collection(db, 'audit_logs'));
     transaction.set(auditRef, {
       actor: input.addedBy,
-      action: 'addition',
+      action: autoApprove ? 'addition' : 'addition_request',
       entity: 'addition',
       entity_id: addRef.id,
-      details: `${toolData.name} +${qty}`,
+      details: JSON.stringify({
+        tool_name: toolData.name,
+        quantity: qty,
+        source: input.source,
+      }),
       created_at: serverTimestamp(),
     });
 
@@ -429,6 +617,44 @@ export async function createAddition(input: AdditionInput): Promise<string> {
   });
 
   return newDocRef.id;
+}
+
+// الموافقة على إضافة كمية
+export async function approveAddition(id: string, approver: string): Promise<void> {
+  const sid = toIdStr(id);
+  await runTransaction(db, async (transaction) => {
+    const addRef = doc(db, 'additions', sid);
+    const addDoc = await transaction.get(addRef);
+    if (!addDoc.exists()) throw new Error('طلب الإضافة غير موجود');
+    const addData = addDoc.data() as any;
+    if (addData.status !== 'pending') throw new Error('الطلب ليس في حالة انتظار');
+
+    const toolRef = doc(db, 'tools', addData.tool_id);
+    const toolDoc = await transaction.get(toolRef);
+    if (!toolDoc.exists()) throw new Error('الأداة غير موجودة');
+    const toolData = toolDoc.data() as any;
+
+    transaction.update(addRef, { status: 'approved', approved_by: approver });
+    transaction.update(toolRef, {
+      total_quantity: (toolData.total_quantity ?? 0) + addData.quantity,
+      available_qty: (toolData.available_qty ?? 0) + addData.quantity,
+      updated_at: serverTimestamp(),
+    });
+
+    const auditRef = doc(collection(db, 'audit_logs'));
+    transaction.set(auditRef, {
+      actor: approver,
+      action: 'approve',
+      entity: 'addition',
+      entity_id: sid,
+      details: JSON.stringify({
+        tool_name: addData.tool_name,
+        quantity: addData.quantity,
+        original_request_by: addData.added_by,
+      }),
+      created_at: serverTimestamp(),
+    });
+  });
 }
 
 export async function listAdditions(filter?: { toolId?: string | number }): Promise<Addition[]> {
@@ -459,6 +685,8 @@ export async function listAdditions(filter?: { toolId?: string | number }): Prom
         source: raw.source ?? null,
         added_at: raw.added_at?.toDate?.()?.toISOString?.() ?? raw.added_at ?? new Date().toISOString(),
         notes: raw.notes ?? null,
+        status: raw.status ?? 'approved',
+        approved_by: raw.approved_by ?? null,
       } as Addition;
     });
     list.sort((a: any, b: any) => new Date(b.added_at).getTime() - new Date(a.added_at).getTime());

@@ -10,7 +10,7 @@ import AsyncStorage from '@react-native-async-storage/async-storage';
 import { collection, getDocs, query, where } from 'firebase/firestore';
 import { db } from '../services/firebase';
 import { hashPassword, verifyPassword } from '../utils/crypto';
-import type { User } from '../types';
+import type { User, PermissionLevel } from '../types';
 
 interface AuthState {
   user: User | null;
@@ -22,10 +22,36 @@ interface AuthState {
   canWithdrawDirect: boolean;
   canAddTools: boolean;
   changePassword: (oldPw: string, newPw: string) => Promise<void>;
+  // الصلاحيات الجديدة
+  withdrawLevel: PermissionLevel;
+  additionLevel: PermissionLevel;
+  canScan: boolean;
+  canViewReports: boolean;
+  canExport: boolean;
+  canImport: boolean;
+  canManageCategories: boolean;
+  canManageTools: boolean;
+  canViewAudit: boolean;
 }
 
 const AuthContext = createContext<AuthState | undefined>(undefined);
 const SESSION_KEY = 'user_session';
+
+// دالة مساعدة لاستخراج مستوى الصلاحية
+function getPermissionLevel(user: User, type: 'withdraw' | 'addition'): PermissionLevel {
+  if (user.role === 'admin') return 'direct';
+  
+  const perms = user.permissions;
+  if (!perms) {
+    // Backward compatibility: استخدم الحقول القديمة
+    if (type === 'withdraw') {
+      return user.can_withdraw_direct === 1 ? 'direct' : 'none';
+    }
+    return user.can_add_tools === 1 ? 'direct' : 'none';
+  }
+  
+  return type === 'withdraw' ? perms.withdraw_level : perms.addition_level;
+}
 
 export function AuthProvider({ children }: { children: React.ReactNode }) {
   const [user, setUser] = useState<User | null>(null);
@@ -38,7 +64,6 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
         const session = await AsyncStorage.getItem(SESSION_KEY);
         if (session) {
           const parsed = JSON.parse(session);
-          // Backward compatibility: handle old mock admin
           if (parsed && parsed.username) {
             setUser(parsed);
           }
@@ -57,19 +82,22 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       const trimmed = username.trim().toLowerCase();
       if (!trimmed || !password) throw new Error('أدخل اسم المستخدم وكلمة المرور');
 
-      // Special bootstrap admin - works even if Firestore empty
+      // Special bootstrap admin
       if (trimmed === 'admin' && password === 'admin123') {
-        // Try to check if real admin exists in Firestore, if not keep mock but with proper shape
         try {
           const q = query(collection(db, 'users'), where('username', '==', 'admin'));
           const snap = await getDocs(q);
           if (!snap.empty) {
             const docData = snap.docs[0].data();
             const u = snap.docs[0].id;
-            // Verify against stored hash if exists
             if (docData.password_hash && docData.salt) {
               const ok = await verifyPassword(password, docData.password_hash, docData.salt);
               if (!ok) throw new Error('كلمة المرور غير صحيحة');
+            }
+            // Check if disabled
+            if (docData.is_active === 0) {
+              const reason = docData.disabled_reason || 'لا يوجد سبب محدد';
+              throw new Error(`حسابك معطل — ${reason}\nتواصل مع المدير`);
             }
             const realUser: User = {
               id: u as any,
@@ -80,13 +108,13 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
               can_add_tools: docData.can_add_tools ?? 1,
               is_active: docData.is_active ?? 1,
               created_at: docData.created_at?.toDate?.()?.toISOString?.() ?? new Date().toISOString(),
+              permissions: docData.permissions,
             };
             setUser(realUser);
             await AsyncStorage.setItem(SESSION_KEY, JSON.stringify(realUser));
             return;
           }
         } catch (err) {
-          // If Firestore fails, fallback to local mock
           console.warn('Admin firestore check failed, using local fallback', err);
         }
 
@@ -113,7 +141,11 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       const docSnap = snap.docs[0];
       const data = docSnap.data();
 
-      if (data.is_active === 0) throw new Error('هذا الحساب معطل');
+      // Check if disabled
+      if (data.is_active === 0) {
+        const reason = data.disabled_reason || 'لا يوجد سبب محدد';
+        throw new Error(`حسابك معطل — ${reason}\nتواصل مع المدير`);
+      }
 
       if (!data.password_hash || !data.salt) {
         throw new Error('حساب بدون كلمة مرور، يرجى إعادة تعيينه');
@@ -131,20 +163,22 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
         can_add_tools: data.can_add_tools ?? 0,
         is_active: data.is_active ?? 1,
         created_at: data.created_at?.toDate?.()?.toISOString?.() ?? new Date().toISOString(),
+        permissions: data.permissions,
       };
 
       setUser(loggedUser);
       await AsyncStorage.setItem(SESSION_KEY, JSON.stringify(loggedUser));
 
-      // Optional: log action to audit (fire and forget)
+      // Log to audit
       try {
         const { addDoc, serverTimestamp } = await import('firebase/firestore');
         await addDoc(collection(db, 'audit_logs'), {
           actor: loggedUser.username,
+          actor_id: loggedUser.id,
           action: 'login',
           entity: 'user',
           entity_id: loggedUser.id,
-          details: `login`,
+          details: 'login',
           created_at: serverTimestamp(),
         });
       } catch {}
@@ -154,17 +188,30 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   }, []);
 
   const signOut = useCallback(async () => {
+    if (user) {
+      try {
+        const { addDoc, serverTimestamp } = await import('firebase/firestore');
+        await addDoc(collection(db, 'audit_logs'), {
+          actor: user.username,
+          actor_id: user.id,
+          action: 'logout',
+          entity: 'user',
+          entity_id: user.id,
+          details: 'logout',
+          created_at: serverTimestamp(),
+        });
+      } catch {}
+    }
     setUser(null);
     await AsyncStorage.removeItem(SESSION_KEY);
-  }, []);
+  }, [user]);
 
   const changePassword = useCallback(async (oldPw: string, newPw: string) => {
     if (!user) throw new Error('غير مسجل دخول');
     if (newPw.length < 6) throw new Error('كلمة المرور الجديدة يجب أن تكون 6 أحرف على الأقل');
 
-    // Admin local mock cannot change password via this method
     if (user.id === 'admin') {
-      throw new Error('حساب admin الافتراضي لا يمكن تغيير كلمته من هنا. أنشئ مستخدم admin في Firestore أولاً.');
+      throw new Error('حساب admin الافتراضي لا يمكن تغيير كلمته من هنا.');
     }
 
     const { doc, getDoc, updateDoc } = await import('firebase/firestore');
@@ -179,11 +226,11 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     const { hash, salt } = await hashPassword(newPw);
     await updateDoc(userRef, { password_hash: hash, salt });
 
-    // audit
     try {
       const { addDoc, collection, serverTimestamp } = await import('firebase/firestore');
       await addDoc(collection(db, 'audit_logs'), {
         actor: user.username,
+        actor_id: user.id,
         action: 'change_password',
         entity: 'user',
         entity_id: user.id,
@@ -203,6 +250,16 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       isAdmin: user?.role === 'admin',
       canWithdrawDirect: user?.role === 'admin' || user?.can_withdraw_direct === 1,
       canAddTools: user?.role === 'admin' || user?.can_add_tools === 1,
+      // الصلاحيات الجديدة
+      withdrawLevel: user ? getPermissionLevel(user, 'withdraw') : 'none',
+      additionLevel: user ? getPermissionLevel(user, 'addition') : 'none',
+      canScan: user?.role === 'admin' || user?.permissions?.can_scan !== false,
+      canViewReports: user?.role === 'admin' || user?.permissions?.can_view_reports !== false,
+      canExport: user?.role === 'admin' || user?.permissions?.can_export !== false,
+      canImport: user?.role === 'admin' || user?.permissions?.can_import === true,
+      canManageCategories: user?.role === 'admin' || user?.permissions?.can_manage_categories === true,
+      canManageTools: user?.role === 'admin' || user?.permissions?.can_manage_tools === true,
+      canViewAudit: user?.role === 'admin' || user?.permissions?.can_view_audit === true,
     }),
     [user, loading, ready, signIn, signOut, changePassword]
   );

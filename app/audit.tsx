@@ -22,16 +22,24 @@ const ACTION_MAP: Record<
   { label: string; icon: keyof typeof Ionicons.glyphMap; color: string }
 > = {
   login: { label: 'تسجيل دخول', icon: 'log-in-outline', color: colors.info },
+  logout: { label: 'تسجيل خروج', icon: 'log-out-outline', color: colors.textMuted },
   create: { label: 'إنشاء', icon: 'add-circle-outline', color: colors.success },
   update: { label: 'تعديل', icon: 'create-outline', color: colors.warning },
   delete: { label: 'حذف', icon: 'trash-outline', color: colors.danger },
   withdraw: { label: 'سحب', icon: 'arrow-down-circle-outline', color: colors.accent },
   withdraw_request: { label: 'طلب سحب', icon: 'time-outline', color: colors.warning },
+  withdraw_direct: { label: 'سحب مباشر', icon: 'arrow-down-circle', color: colors.accent },
   approve: { label: 'موافقة', icon: 'checkmark-circle-outline', color: colors.success },
   reject: { label: 'رفض', icon: 'close-circle-outline', color: colors.danger },
   return: { label: 'إرجاع', icon: 'return-down-back-outline', color: colors.primary },
   addition: { label: 'إضافة كمية', icon: 'add-outline', color: colors.success },
+  addition_request: { label: 'طلب إضافة', icon: 'time-outline', color: colors.warning },
   change_password: { label: 'تغيير كلمة مرور', icon: 'key-outline', color: colors.info },
+  hide: { label: 'إخفاء أداة', icon: 'eye-off-outline', color: colors.warning },
+  unhide: { label: 'إظهار أداة', icon: 'eye-outline', color: colors.info },
+  bulk_update: { label: 'تحديث جماعي', icon: 'options-outline', color: colors.info },
+  disable_user: { label: 'تعطيل مستخدم', icon: 'person-remove-outline', color: colors.danger },
+  enable_user: { label: 'تفعيل مستخدم', icon: 'person-add-outline', color: colors.success },
 };
 
 export default function AuditScreen() {

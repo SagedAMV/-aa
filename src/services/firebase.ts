@@ -2,7 +2,7 @@ import { initializeApp } from 'firebase/app';
 import { getFirestore, enableIndexedDbPersistence } from 'firebase/firestore';
 
 const firebaseConfig = {
-  apiKey: "AIzaSyDXPQjDWbUSXwKCkXlhVHxj4ijaY8pvOBw",
+  apiKey: "YOUR_FIREBASE_API_KEY",
   authDomain: "saged-8b825.firebaseapp.com",
   projectId: "saged-8b825",
   storageBucket: "saged-8b825.firebasestorage.app",

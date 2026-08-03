@@ -1,4 +1,4 @@
-import React, { useCallback, useState } from 'react';
+import React, { useCallback, useEffect, useState } from 'react';
 import {
   Alert,
   Pressable,
@@ -24,6 +24,10 @@ import {
   checkLowStockAndNotify,
   checkOverdueAndNotify,
 } from '../../src/services/notifications';
+import {
+  subscribeDisbursements,
+  subscribeAdditions,
+} from '../../src/db/movementsRepo';
 import { useAuth } from '../../src/context/AuthContext';
 import { Button, Card, Field, Sheet } from '../../src/components/UI';
 import { colors, font, radius, spacing } from '../../src/theme';
@@ -53,6 +57,9 @@ export default function SettingsScreen() {
   // Table settings states
   const [showCategory, setShowCategory] = useState(true);
   const [defaultSort, setDefaultSort] = useState<'name' | 'quantity'>('name');
+  
+  // Pending approvals count
+  const [pendingCount, setPendingCount] = useState(0);
 
   const load = useCallback(async () => {
     try {
@@ -77,6 +84,20 @@ export default function SettingsScreen() {
       load();
     }, [load])
   );
+
+  // عدّاد الطلبات المعلقة
+  useEffect(() => {
+    if (!isAdmin) return;
+    let wdPending = 0;
+    const unsub1 = subscribeDisbursements((data) => {
+      wdPending = data.filter(w => w.status === 'pending').length;
+    });
+    const unsub2 = subscribeAdditions((data) => {
+      const addPending = data.filter(a => a.status === 'pending').length;
+      setPendingCount(wdPending + addPending);
+    });
+    return () => { unsub1(); unsub2(); };
+  }, [isAdmin]);
   
   const toggleShowCategory = async (value: boolean) => {
     setShowCategory(value);
@@ -240,6 +261,12 @@ export default function SettingsScreen() {
         <>
           <Text style={s.section}>الإدارة</Text>
           <Card style={{ padding: spacing.sm }}>
+            <Row
+              icon="hourglass-outline"
+              title={`طلبات الموافقة${pendingCount > 0 ? ` (${pendingCount})` : ''}`}
+              subtitle="صرف وإضافات بانتظار موافقتك"
+              onPress={() => router.push('/approvals')}
+            />
             <Row
               icon="people-outline"
               title="إدارة المستخدمين"

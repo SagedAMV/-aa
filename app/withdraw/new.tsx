@@ -16,13 +16,13 @@ import { createDisbursement } from '../../src/db/movementsRepo';
 import { useAuth } from '../../src/context/AuthContext';
 import { Button, Field, Sheet } from '../../src/components/UI';
 import { colors, font, radius, spacing } from '../../src/theme';
-import type { Tool } from '../../src/types';
+import type { Tool, WithdrawType, PermissionLevel } from '../../src/types';
 
 const REASONS = ['صيانة', 'مهمة ميدانية', 'استبدال', 'تركيب', 'أخرى'];
 
 export default function NewDisbursementScreen() {
   const { toolId } = useLocalSearchParams<{ toolId?: string }>();
-  const { user, canWithdrawDirect } = useAuth();
+  const { user, withdrawLevel, canWithdrawDirect } = useAuth();
 
   const [tool, setTool] = useState<Tool | null>(null);
   const [picker, setPicker] = useState(false);
@@ -34,6 +34,14 @@ export default function NewDisbursementScreen() {
   const [reason, setReason] = useState<string>('صيانة');
   const [notes, setNotes] = useState('');
   const [saving, setSaving] = useState(false);
+  
+  // الحقول الجديدة
+  const [withdrawType, setWithdrawType] = useState<WithdrawType>('permanent');
+  const [expectedReturnStr, setExpectedReturnStr] = useState(''); // YYYY-MM-DD format
+
+  // التحقق من الصلاحيات
+  const canWithdraw = withdrawLevel !== 'none';
+  const needsApproval = withdrawLevel === 'with_approval';
 
   useEffect(() => {
     if (toolId) {
@@ -51,6 +59,10 @@ export default function NewDisbursementScreen() {
   }, [picker, loadTools]);
 
   const onSubmit = async () => {
+    if (!canWithdraw) {
+      Alert.alert('تنبيه', 'ليس لديك صلاحية الصرف');
+      return;
+    }
     if (!tool) {
       Alert.alert('تنبيه', 'يرجى اختيار الأداة');
       return;
@@ -68,6 +80,26 @@ export default function NewDisbursementScreen() {
       Alert.alert('تنبيه', `الكمية المتاحة ${tool.available_qty} فقط`);
       return;
     }
+    
+    // إذا كان صرف مؤقت، يجب تحديد موعد الإرجاع
+    if (withdrawType === 'temporary' && !expectedReturnStr) {
+      Alert.alert('تنبيه', 'يجب تحديد موعد الإرجاع المتوقع للصرف المؤقت');
+      return;
+    }
+    
+    // التحقق من صيغة التاريخ
+    let expectedReturn: Date | null = null;
+    if (withdrawType === 'temporary' && expectedReturnStr) {
+      expectedReturn = new Date(expectedReturnStr);
+      if (isNaN(expectedReturn.getTime())) {
+        Alert.alert('تنبيه', 'صيغة التاريخ غير صحيحة. استخدم YYYY-MM-DD');
+        return;
+      }
+      if (expectedReturn <= new Date()) {
+        Alert.alert('تنبيه', 'موعد الإرجاع يجب أن يكون في المستقبل');
+        return;
+      }
+    }
 
     setSaving(true);
     try {
@@ -79,15 +111,22 @@ export default function NewDisbursementScreen() {
         reason,
         notes: notes || null,
         autoApprove: canWithdrawDirect,
+        withdrawType,
+        expectedReturn: withdrawType === 'temporary' && expectedReturn
+          ? expectedReturn.toISOString()
+          : null,
       });
 
-      Alert.alert(
-        'تم',
-        res.status === 'approved'
-          ? 'تم تسجيل الصرف وخصم الكمية من المخزن'
-          : 'تم إرسال طلب الصرف وينتظر موافقة مدير المخزن',
-        [{ text: 'حسناً', onPress: () => router.back() }]
-      );
+      const typeText = withdrawType === 'temporary' ? 'مؤقت' : 'دائم';
+      
+      let message = '';
+      if (res.status === 'approved') {
+        message = `تم تسجيل الصرف ${typeText} وخصم الكمية من المخزن`;
+      } else {
+        message = `تم إرسال طلب الصرف ${typeText} وينتظر موافقة مدير المخزن`;
+      }
+
+      Alert.alert('تم', message, [{ text: 'حسناً', onPress: () => router.back() }]);
     } catch (e: any) {
       Alert.alert('خطأ', e.message ?? 'فشل تسجيل الصرف');
     } finally {
@@ -95,12 +134,55 @@ export default function NewDisbursementScreen() {
     }
   };
 
+  // إذا لم يكن لديه صلاحية، اعرض رسالة
+  if (!canWithdraw) {
+    return (
+      <View style={styles.noPermission}>
+        <Ionicons name="lock-closed" size={64} color={colors.textLight} />
+        <Text style={styles.noPermissionText}>ليس لديك صلاحية الصرف</Text>
+        <Text style={styles.noPermissionSub}>تواصل مع المدير للحصول على الصلاحية</Text>
+      </View>
+    );
+  }
+
   return (
     <ScrollView
       style={{ flex: 1, backgroundColor: colors.bg }}
       contentContainerStyle={{ padding: spacing.lg, paddingBottom: 40 }}
       keyboardShouldPersistTaps="handled"
     >
+      {/* نوع الصرف */}
+      <Text style={s.label}>نوع الصرف</Text>
+      <View style={s.typeRow}>
+        <Pressable
+          style={[s.typeBtn, withdrawType === 'permanent' && s.typeBtnActive]}
+          onPress={() => setWithdrawType('permanent')}
+        >
+          <Ionicons 
+            name="arrow-forward-circle" 
+            size={20} 
+            color={withdrawType === 'permanent' ? colors.white : colors.textMuted} 
+          />
+          <Text style={[s.typeText, withdrawType === 'permanent' && { color: colors.white }]}>
+            صرف دائم
+          </Text>
+        </Pressable>
+        <Pressable
+          style={[s.typeBtn, withdrawType === 'temporary' && s.typeBtnActiveTemp]}
+          onPress={() => setWithdrawType('temporary')}
+        >
+          <Ionicons 
+            name="swap-horizontal" 
+            size={20} 
+            color={withdrawType === 'temporary' ? colors.white : colors.textMuted} 
+          />
+          <Text style={[s.typeText, withdrawType === 'temporary' && { color: colors.white }]}>
+            صرف مؤقت
+          </Text>
+        </Pressable>
+      </View>
+
+      {/* الأداة */}
       <Text style={s.label}>
         الأداة <Text style={{ color: colors.danger }}>*</Text>
       </Text>
@@ -126,6 +208,7 @@ export default function NewDisbursementScreen() {
         <Text style={s.scanText}>أو امسح الباركود لاختيار الأداة</Text>
       </Pressable>
 
+      {/* الكمية */}
       <Field
         label="الكمية المطلوبة"
         required
@@ -135,6 +218,7 @@ export default function NewDisbursementScreen() {
         hint={tool ? `الحد الأقصى: ${tool.available_qty}` : undefined}
       />
 
+      {/* المستلم */}
       <Field
         label="اسم المستلم (الجهة الطالبة)"
         required
@@ -143,6 +227,7 @@ export default function NewDisbursementScreen() {
         placeholder="مثال: م. أحمد — قسم الصيانة"
       />
 
+      {/* السبب */}
       <Text style={s.label}>سبب الصرف</Text>
       <View style={s.chips}>
         {REASONS.map((r) => (
@@ -158,6 +243,28 @@ export default function NewDisbursementScreen() {
         ))}
       </View>
 
+      {/* موعد الإرجاع - يظهر فقط إذا كان صرف مؤقت */}
+      {withdrawType === 'temporary' && (
+        <View style={s.dateSection}>
+          <Text style={s.label}>
+            موعد الإرجاع المتوقع <Text style={{ color: colors.danger }}>*</Text>
+          </Text>
+          <View style={s.dateInput}>
+            <Ionicons name="calendar-outline" size={18} color={colors.primary} />
+            <TextInput
+              style={s.dateTextInput}
+              placeholder="YYYY-MM-DD (مثال: 2026-09-01)"
+              placeholderTextColor={colors.textLight}
+              value={expectedReturnStr}
+              onChangeText={setExpectedReturnStr}
+              keyboardType="default"
+            />
+          </View>
+          <Text style={s.dateHint}>أدخل تاريخ الإرجاع المتوقع بصيغة سنة-شهر-يوم</Text>
+        </View>
+      )}
+
+      {/* ملاحظات */}
       <Field
         label="ملاحظات"
         value={notes}
@@ -166,7 +273,8 @@ export default function NewDisbursementScreen() {
         placeholder="اختياري"
       />
 
-      {!canWithdrawDirect && (
+      {/* تحذير إذا كان يحتاج موافقة */}
+      {needsApproval && (
         <View style={s.warn}>
           <Ionicons name="information-circle" size={18} color={colors.warning} />
           <Text style={s.warnText}>
@@ -175,13 +283,19 @@ export default function NewDisbursementScreen() {
         </View>
       )}
 
+      {/* زر الإرسال */}
       <Button
-        title={canWithdrawDirect ? 'تسجيل الصرف' : 'إرسال طلب الصرف'}
+        title={
+          canWithdrawDirect 
+            ? (withdrawType === 'temporary' ? 'تسجيل صرف مؤقت' : 'تسجيل الصرف')
+            : 'إرسال طلب الصرف'
+        }
         icon="checkmark-circle-outline"
         onPress={onSubmit}
         loading={saving}
       />
 
+      {/* Sheet اختيار أداة */}
       <Sheet visible={picker} onClose={() => setPicker(false)} title="اختيار أداة">
         <TextInput
           style={s.searchInput}
@@ -228,6 +342,65 @@ const s = StyleSheet.create({
     marginBottom: 6,
     textAlign: 'right',
   },
+  // نوع الصرف
+  typeRow: {
+    flexDirection: 'row-reverse',
+    gap: spacing.md,
+    marginBottom: spacing.lg,
+  },
+  typeBtn: {
+    flex: 1,
+    flexDirection: 'row-reverse',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 8,
+    paddingVertical: 14,
+    borderRadius: radius.md,
+    borderWidth: 1.5,
+    borderColor: colors.border,
+    backgroundColor: colors.card,
+  },
+  typeBtnActive: {
+    backgroundColor: colors.primary,
+    borderColor: colors.primary,
+  },
+  typeBtnActiveTemp: {
+    backgroundColor: colors.warning,
+    borderColor: colors.warning,
+  },
+  typeText: {
+    fontSize: font.small,
+    fontWeight: '700',
+    color: colors.textMuted,
+  },
+  // التاريخ
+  dateSection: {
+    marginBottom: spacing.lg,
+  },
+  dateInput: {
+    flexDirection: 'row-reverse',
+    alignItems: 'center',
+    gap: 10,
+    backgroundColor: colors.card,
+    borderWidth: 1,
+    borderColor: colors.border,
+    borderRadius: radius.md,
+    paddingHorizontal: spacing.md,
+  },
+  dateTextInput: {
+    flex: 1,
+    paddingVertical: 12,
+    fontSize: font.body,
+    color: colors.text,
+    textAlign: 'right',
+  },
+  dateHint: {
+    fontSize: font.tiny,
+    color: colors.textMuted,
+    marginTop: 4,
+    textAlign: 'right',
+  },
+  // الباقي
   selector: {
     flexDirection: 'row-reverse',
     alignItems: 'center',
@@ -295,4 +468,25 @@ const s = StyleSheet.create({
   pickName: { fontSize: font.small, fontWeight: '700', color: colors.text, textAlign: 'right' },
   pickMeta: { fontSize: font.tiny, color: colors.textMuted, marginTop: 2, textAlign: 'right' },
   noResult: { textAlign: 'center', color: colors.textMuted, padding: spacing.xl },
+});
+
+const styles = StyleSheet.create({
+  noPermission: {
+    flex: 1,
+    justifyContent: 'center',
+    alignItems: 'center',
+    padding: spacing.xxl,
+    gap: spacing.md,
+  },
+  noPermissionText: {
+    fontSize: font.h2,
+    fontWeight: '700',
+    color: colors.text,
+    textAlign: 'center',
+  },
+  noPermissionSub: {
+    fontSize: font.small,
+    color: colors.textMuted,
+    textAlign: 'center',
+  },
 });

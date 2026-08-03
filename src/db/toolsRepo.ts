@@ -14,7 +14,7 @@ import {
   onSnapshot,
   Unsubscribe,
 } from 'firebase/firestore';
-import type { Category, Tool, ToolFilter } from '../types';
+import type { Category, Tool, ToolFilter, ToolCondition, ToolSortBy } from '../types';
 
 const toolsCollection = collection(db, 'tools');
 const categoriesCollection = collection(db, 'categories');
@@ -68,6 +68,8 @@ function enrichTool(raw: any, id: string, catMap: Map<string, Category> | null):
     image_uri: raw.image_uri ?? null,
     notes: raw.notes ?? null,
     is_deleted: raw.is_deleted ? 1 : 0,
+    is_hidden: raw.is_hidden ? 1 : 0,
+    condition: raw.condition ?? 'used',
     created_at: raw.created_at?.toDate?.()?.toISOString?.() ?? raw.created_at ?? new Date().toISOString(),
     updated_at: raw.updated_at?.toDate?.()?.toISOString?.() ?? raw.updated_at ?? new Date().toISOString(),
   };
@@ -102,6 +104,12 @@ function applyFilter(tools: Tool[], filter: ToolFilter = {}): Tool[] {
   }
   // Exclude deleted
   res = res.filter(t => !t.is_deleted);
+  
+  // فلتر الأدوات المخفية (للمدير فقط يرى المخفية)
+  if (!filter.includeHidden) {
+    res = res.filter(t => !t.is_hidden);
+  }
+  
   return res.sort((a, b) => a.name.localeCompare(b.name));
 }
 
@@ -159,8 +167,8 @@ export async function findToolByCode(code: string): Promise<Tool | null> {
     const d = snap.docs[0];
     if (!d.data().is_deleted) return enrichTool(d.data(), d.id, catMap);
   }
-  // Fallback scan client side for barcode containing
-  const all = await listTools();
+  // Fallback scan client side
+  const all = await listTools({ includeHidden: true });
   return all.find(t => t.barcode === trimmed || t.serial_number === trimmed) ?? null;
 }
 
@@ -175,6 +183,8 @@ export interface ToolInput {
   min_quantity?: number;
   image_uri?: string | null;
   notes?: string | null;
+  is_hidden?: boolean;
+  condition?: ToolCondition;
 }
 
 async function logAudit(actor: string, action: string, entity: string, entity_id: string, details?: string) {
@@ -195,7 +205,6 @@ export async function createTool(input: ToolInput, actor: string): Promise<strin
   const qty = Math.floor(Number(input.total_quantity));
   if (!Number.isFinite(qty) || qty < 0) throw new Error('الكمية غير صالحة');
 
-  // Normalize category_id to string for Firestore
   let catId: string | null = null;
   if (input.category_id != null && String(input.category_id).trim() !== '') {
     catId = toStringId(input.category_id);
@@ -214,11 +223,13 @@ export async function createTool(input: ToolInput, actor: string): Promise<strin
     image_uri: input.image_uri || null,
     notes: input.notes?.trim() || null,
     is_deleted: false,
+    is_hidden: input.is_hidden ?? false,
+    condition: input.condition ?? 'used',
     created_at: serverTimestamp(),
     updated_at: serverTimestamp(),
   });
 
-  categoriesCache = null; // invalidate
+  categoriesCache = null;
   await logAudit(actor, 'create', 'tool', docRef.id, input.name);
   return docRef.id;
 }
@@ -233,7 +244,6 @@ export async function updateTool(id: string | number, input: ToolInput, actor: s
   const newTotal = Math.floor(Number(input.total_quantity));
   if (!Number.isFinite(newTotal) || newTotal < 0) throw new Error('الكمية غير صالحة');
 
-  // Preserve available difference if total changed
   const diff = newTotal - (existing.total_quantity ?? 0);
   const newAvailable = Math.max(0, (existing.available_qty ?? 0) + diff);
 
@@ -254,6 +264,8 @@ export async function updateTool(id: string | number, input: ToolInput, actor: s
     min_quantity: Math.floor(Number(input.min_quantity ?? 0)),
     image_uri: input.image_uri || null,
     notes: input.notes?.trim() || null,
+    is_hidden: input.is_hidden ?? false,
+    condition: input.condition ?? existing.condition ?? 'used',
     updated_at: serverTimestamp(),
   });
 
@@ -268,6 +280,65 @@ export async function deleteTool(id: string | number, actor: string): Promise<vo
   await logAudit(actor, 'delete', 'tool', sid);
 }
 
+// إخفاء/إظهار أداة
+export async function toggleToolVisibility(id: string | number, isHidden: boolean, actor: string): Promise<void> {
+  const sid = toStringId(id);
+  const docRef = doc(db, 'tools', sid);
+  await updateDoc(docRef, { is_hidden: isHidden, updated_at: serverTimestamp() });
+  await logAudit(actor, isHidden ? 'hide' : 'unhide', 'tool', sid);
+}
+
+// حذف/إخفاء أدوات متعددة
+export async function bulkUpdateTools(
+  ids: string[],
+  updates: { is_hidden?: boolean; is_deleted?: boolean },
+  actor: string
+): Promise<{ updated: number }> {
+  let updated = 0;
+  for (const id of ids) {
+    try {
+      const docRef = doc(db, 'tools', id);
+      await updateDoc(docRef, { ...updates, updated_at: serverTimestamp() });
+      updated++;
+    } catch (e) {
+      console.warn('bulkUpdateTools failed for', id, e);
+    }
+  }
+  await logAudit(actor, 'bulk_update', 'tools', ids.join(','), JSON.stringify(updates));
+  return { updated };
+}
+
+// كشف الأدوات المتكررة بنفس الاسم
+export async function findDuplicateTools(): Promise<Map<string, Tool[]>> {
+  const allTools = await listTools({ includeHidden: true });
+  const nameMap = new Map<string, Tool[]>();
+  
+  for (const tool of allTools) {
+    const normalizedName = tool.name.trim().toLowerCase();
+    if (!nameMap.has(normalizedName)) {
+      nameMap.set(normalizedName, []);
+    }
+    nameMap.get(normalizedName)!.push(tool);
+  }
+  
+  // إرجاع فقط الأسماء المتكررة
+  const duplicates = new Map<string, Tool[]>();
+  nameMap.forEach((tools, name) => {
+    if (tools.length > 1) {
+      duplicates.set(name, tools);
+    }
+  });
+  
+  return duplicates;
+}
+
+// التحقق من وجود أداة بنفس الاسم
+export async function checkDuplicateName(name: string): Promise<Tool | null> {
+  const normalizedName = name.trim().toLowerCase();
+  const allTools = await listTools({ includeHidden: true });
+  return allTools.find(t => t.name.trim().toLowerCase() === normalizedName) ?? null;
+}
+
 export async function listCategories(): Promise<Category[]> {
   const snap = await getDocs(query(categoriesCollection, orderBy('name', 'asc')));
   const list = snap.docs.map(d => {
@@ -279,7 +350,6 @@ export async function listCategories(): Promise<Category[]> {
       created_at: data.created_at?.toDate?.()?.toISOString?.() ?? undefined,
     } as Category;
   });
-  // Update cache
   const map = new Map<string, Category>();
   list.forEach(c => map.set(toStringId(c.id), c));
   categoriesCache = map;
@@ -299,12 +369,10 @@ export async function createCategory(name: string, color = '#0F766E'): Promise<s
 
 export async function deleteCategory(id: string | number): Promise<void> {
   const sid = toStringId(id);
-  // First, unset category from tools that use it
   const q = query(toolsCollection, where('category_id', '==', sid));
   const snap = await getDocs(q);
   const promises = snap.docs.map(d => updateDoc(doc(db, 'tools', d.id), { category_id: null, updated_at: serverTimestamp() }));
   await Promise.all(promises);
-  // Delete category doc
   await deleteDoc(doc(db, 'categories', sid));
   categoriesCache = null;
 }
@@ -319,11 +387,38 @@ export async function listLocations(): Promise<string[]> {
   return Array.from(locations).filter(Boolean).sort();
 }
 
-// For compatibility with old count queries in categories screen
+// نسخ أداة
+export async function duplicateTool(id: string | number, actor: string): Promise<string> {
+  const source = await getTool(id);
+  if (!source) throw new Error('الأداة غير موجودة');
+
+  const newName = `${source.name} (نسخة)`;
+  const docRef = await addDoc(toolsCollection, {
+    name: newName,
+    serial_number: null,
+    barcode: null,
+    category_id: source.category_id ? toStringId(source.category_id) : null,
+    description: source.description,
+    location: source.location,
+    total_quantity: source.total_quantity,
+    available_qty: source.available_qty,
+    min_quantity: source.min_quantity,
+    image_uri: source.image_uri,
+    notes: source.notes,
+    is_deleted: false,
+    is_hidden: source.is_hidden ?? false,
+    condition: source.condition ?? 'used',
+    created_at: serverTimestamp(),
+    updated_at: serverTimestamp(),
+  });
+
+  await logAudit(actor, 'create', 'tool', docRef.id, `نسخة من: ${source.name}`);
+  return docRef.id;
+}
+
 export async function countToolsByCategory(categoryId: string | number): Promise<number> {
   const sid = toStringId(categoryId);
   try {
-    // Try composite query, if index missing fallback to client filter
     const q = query(toolsCollection, where('category_id', '==', sid));
     const snap = await getDocs(q);
     let count = 0;
@@ -335,7 +430,7 @@ export async function countToolsByCategory(categoryId: string | number): Promise
   } catch (e) {
     console.warn('countToolsByCategory fallback', e);
     try {
-      const all = await listTools();
+      const all = await listTools({ includeHidden: true });
       return all.filter(t => String(t.category_id) === sid).length;
     } catch {
       return 0;
